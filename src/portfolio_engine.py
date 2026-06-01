@@ -73,7 +73,7 @@ def get_live_fx_rate(from_curr, to_curr="EUR"):
     return 1.0
 
 def get_crypto_info_if_applicable(isin: str, name: str):
-    if (isin or "").strip().lower() != "crypto currency": return None
+    if not (isin or "").strip().lower().startswith("crypto currency"): return None
     symbol = (name or "").strip().upper()
     for suf in ("-EUR", "-USD"):
         ticker_sym = f"{symbol}{suf}"
@@ -102,8 +102,8 @@ def get_ticker_info(isin, name):
 
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     search_queries = []
-    
-    if isin not in ["Unknown", "Crypto currency"]: search_queries.append(isin)
+
+    if isin != "Unknown" and not isin.lower().startswith("crypto currency"): search_queries.append(isin)
     if name != "Unknown": search_queries.append(name)
         
     for query in search_queries:

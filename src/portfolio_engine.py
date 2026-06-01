@@ -10,7 +10,9 @@ from datetime import datetime
 # ==========================================
 # CONFIGURATION
 # ==========================================
+ 
 base_dir = Path(os.getenv("data_dir", "."))
+config_dir = Path(os.getenv("config_dir", "."))
 OUTPUT_DIR = os.path.join(base_dir, "processed")
 INPUT_FILES = [
     Path(OUTPUT_DIR) / "portfolio_platform1_input.csv",
@@ -19,8 +21,8 @@ INPUT_FILES = [
     Path(OUTPUT_DIR) / "portfolio_platform4_input.csv",
     Path(OUTPUT_DIR) / "portfolio_platform5_input.csv"
 ]
-CORRECTIONS_FILE = Path(OUTPUT_DIR) / "portfolio_corrections.csv"
-Industry_Sector_Country_Fix_FILE = Path(OUTPUT_DIR) / "Industry_Sector_Country_Fix.csv"
+CORRECTIONS_FILE = Path(config_dir) / "portfolio_corrections.csv"
+Industry_Sector_Country_Fix_FILE = Path(config_dir) / "Industry_Sector_Country_Fix.csv"
 FILE_CSV_OUT = Path(OUTPUT_DIR) / "Consolidated_Portfolio_Positions.csv"
 FILE_XLSX_OUT = Path(OUTPUT_DIR) / "Overall_PnL_and_Tax_Summary.xlsx"
 

@@ -1,4 +1,5 @@
 import re
+import csv
 import pdfplumber
 import pandas as pd
 from pathlib import Path
@@ -6,14 +7,8 @@ from pathlib import Path
 """
 Broker Statement Extraction Module
 ----------------------------------
-This module provides utilities to parse searchable PDF bank statements 
-for Buy, Sell, and Dividend transactions. 
-
-Key Features:
-- Multi-language support (German/English anchors).
-- Numeric cleaning for European/US decimal formats.
-- Multi-line extraction (Header -> Next Line Value).
-- Dynamic security name and ISIN cleaning.
+Multi-Source Broker Statement Parser
+Standardizes financial data (Buy/Sell/Dividends) from PDF & CSV exports into unified EUR metrics.
 """
 
 def clean_decimal(val):
@@ -357,4 +352,74 @@ def extract_source_c_csv(file_path):
             
         results.append(data)
         
+    return results
+
+# for source d
+def extract_source_d_csv(file_path):
+    numeric_filter = re.compile(r"[\d.]+")
+    results = []
+    
+    with open(file_path, mode='r', encoding='utf-8-sig', newline='') as f:
+        reader = csv.reader(f, delimiter=',')
+        try:
+            headers = [col.strip() for col in next(reader)]
+        except StopIteration:
+            return []
+            
+        try:
+            idx = {name: headers.index(name) for name in ['Time', 'Spend Amount', 'Receive Amount', 'Fee', 'Price', 'Status']}
+        except ValueError:
+            return []
+
+        i_time, i_spend, i_recv, i_fee, i_price, i_status = idx['Time'], idx['Spend Amount'], idx['Receive Amount'], idx['Fee'], idx['Price'], idx['Status']
+        max_idx = max(idx.values())
+        
+        def quick_numeric(val):
+            safe_str = str(val).replace(',', '')
+            nums = numeric_filter.findall(safe_str)
+            return float(nums[0]) if nums else 0.0
+
+        for row in reader:
+            if len(row) <= max_idx:
+                continue
+                
+            # Cast row to string to ensure consistency for regex
+            row = [str(cell) for cell in row]
+            
+            if row[i_status].strip().lower() != 'successful':
+                continue
+                
+            spend_str = row[i_spend].strip()
+            receive_str = row[i_recv].strip()
+            trans_type = 'buy' if 'EUR' in spend_str.upper() else 'sell'
+            
+            qty_val = quick_numeric(receive_str) if trans_type == 'buy' else quick_numeric(spend_str)
+            price_val = quick_numeric(row[i_price])
+            fee_val = quick_numeric(row[i_fee])
+            
+            receive_parts = receive_str.split()
+            ticker = receive_parts[-1] if len(receive_parts) > 1 else "Unknown"
+            
+            raw_time = row[i_time].strip()
+            try:
+                date_part = raw_time.split()[0]
+                day, month, year = date_part.split('-')
+                formatted_date = f"20{year}-{month}-{day}" if len(year) == 2 else f"{year}-{month}-{day}"
+            except Exception:
+                formatted_date = raw_time.split()[0] if raw_time else "00.00.0000"
+
+            results.append({
+                "file_original": Path(file_path).name,
+                "date": formatted_date,
+                "isin": "Crypto currency",
+                "security_name": ticker,
+                "type": trans_type,
+                "quantity": qty_val,
+                "price": price_val,
+                "currency": "EUR",
+                "tax_withheld": 0.0,
+                "broker_fee": fee_val,
+                "dividend_after_taxes": 0.0
+            })
+            
     return results

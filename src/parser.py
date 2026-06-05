@@ -355,6 +355,7 @@ def extract_source_c_csv(file_path):
     return results
 
 # for source d
+ticker_isin_map = {}
 def extract_source_d_csv(file_path):
     numeric_filter = re.compile(r"[\d.]+")
     results = []
@@ -400,6 +401,12 @@ def extract_source_d_csv(file_path):
             receive_parts = receive_str.split()
             ticker = receive_parts[-1] if len(receive_parts) > 1 else "Unknown"
             
+            if ticker not in ticker_isin_map:
+                new_count = len(ticker_isin_map) + 1
+                ticker_isin_map[ticker] = f"Crypto currency {new_count}"
+            
+            isin_val = ticker_isin_map[ticker]
+            
             raw_time = row[i_time].strip()
             try:
                 date_part = raw_time.split()[0]
@@ -411,12 +418,13 @@ def extract_source_d_csv(file_path):
             results.append({
                 "file_original": Path(file_path).name,
                 "date": formatted_date,
-                "isin": "Crypto currency",
+                "isin": isin_val,
                 "security_name": ticker,
                 "type": trans_type,
                 "quantity": qty_val,
                 "price": price_val,
                 "currency": "EUR",
+                
                 "tax_withheld": 0.0,
                 "broker_fee": fee_val,
                 "dividend_after_taxes": 0.0

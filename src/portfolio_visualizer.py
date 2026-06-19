@@ -22,6 +22,8 @@ def determine_asset_class(row, etf_vars):
         return "ETF"
     elif isin.startswith("CRYPTO CURRENCY") or sector == "cryptocurrency":
         return "Cryptocurrency"
+    elif isin.startswith("bonds") or name == "bonds":
+        return "Bonds"
     elif sector == "real estate":
         return "Real Estate"
     elif sector == "commodities" or "gold" in name_lower or "silver" in name_lower or isin in ["GC=F", "SI=F"]:
@@ -82,7 +84,12 @@ def generate_master_dashboard(file_positions, file_summary, file_look_through, e
             textinfo="label+value+percent parent",
             hovertemplate="<b>%{label}</b><br>Value: €%{value:,.1f}<br>Share: %{percentParent:.2%}<extra></extra>"
         )
-        fig_tree.update_layout(template=CHART_TEMPLATE, margin=dict(t=50, l=10, r=10, b=10), height=750)
+        fig_tree.update_layout(
+            template=CHART_TEMPLATE, 
+            margin=dict(t=50, l=10, r=10, b=10), 
+            height=750, 
+            font=dict(color="white", family="Segoe UI, Tahoma, Geneva, Verdana, sans-serif", size=12)
+        )
         figures['Treemap'] = fig_tree
     else:
         print("Warning: Look-through data is empty after filtering positive values.")
@@ -217,7 +224,7 @@ def generate_master_dashboard(file_positions, file_summary, file_look_through, e
                 df_div_filtered, 
                 x='Year_Str', 
                 y='Value',
-                title="Year-over-Year Dividend Income",
+                title="Year-over-Year Dividend Income (Bonds yield not considered)",
                 text_auto='.2s',
                 labels={'Value': 'Dividends (EUR)', 'Year_Str': 'Year'},
                 color='Value', 

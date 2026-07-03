@@ -72,7 +72,7 @@ def update_and_fetch_market_data():
         
         if file_path.exists():
             existing_df = pd.read_csv(file_path)
-            existing_df['Date'] = pd.to_datetime(existing_df['Date'], format='mixed').dt.normalize()
+            existing_df['Date'] = pd.to_datetime(existing_df['Date'], format='mixed', dayfirst=True).dt.normalize()
             start_date = existing_df['Date'].max().strftime('%Y-%m-%d')
             print(f"      File exists. Updating from {start_date}...")
         else:

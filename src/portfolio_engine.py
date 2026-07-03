@@ -10,7 +10,6 @@ from datetime import datetime
 # ==========================================
 # CONFIGURATION
 # ==========================================
- 
 base_dir = Path(os.getenv("data_dir", "."))
 config_dir = Path(os.getenv("config_dir", "."))
 OUTPUT_DIR = os.path.join(base_dir, "processed")
@@ -31,12 +30,37 @@ FX_CACHE = {}
 # ==========================================
 # CORE UTILITIES
 # ==========================================
+def clean_metadata_string(val):
+    """Removes hidden encoding artifacts like Â, Ä, or non-breaking spaces permanently."""
+    if pd.isna(val): return "Unknown"
+    s = str(val).strip()
+    for bad in ['Â', 'Ä', '\xa0', '\xc2', '\x84', '\xa2']:
+        s = s.replace(bad, '')
+    return ' '.join(s.split()).strip()
+
 def clean_name(name):
     if pd.isna(name): return "Unknown"
-    name = str(name).lower().replace("_", " ").strip()
+    s = str(name)
+    for bad in ['Â', 'Ä', '\xa0', '\xc2']:
+        s = s.replace(bad, ' ')
+    s = s.lower().replace("_", " ").strip()
     for suffix in [" ag", " gmbh", " plc", " inc", " corp", " se", "(acc)", "(dist)", " class a", " class b"]:
-        name = name.replace(suffix, "")
-    return name.strip().title()
+        s = s.replace(suffix, "")
+    return ' '.join(s.split()).strip().title()
+
+def clean_numeric_value(val):
+    """Cleans currency symbols, percentages, and commas to prevent conversion to 0.0."""
+    if pd.isna(val): return 0.0
+    s = str(val).strip().replace('€', '').replace('$', '').replace('%', '').replace(' ', '')
+    if not s: return 0.0
+    if ',' in s and '.' not in s:
+        s = s.replace(',', '.')
+    elif ',' in s and '.' in s:
+        s = s.replace(',', '')
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
 
 def robust_date_parser(date_val):
     date_str = str(date_val).strip()
@@ -147,6 +171,7 @@ def truncate_4_decimals(val):
     except:
         return val
 
+
 # ==========================================
 # ENGINE PIPELINE EXECUTION
 # ==========================================
@@ -154,6 +179,7 @@ def run_pipeline():
     df_corr = pd.DataFrame()
     if CORRECTIONS_FILE.exists():
         df_corr = pd.read_csv(CORRECTIONS_FILE)
+        df_corr.columns = df_corr.columns.str.strip()
         for c in ['wrong_isin', 'correct_isin', 'platform', 'manual_type', 'manual_quantity', 'manual_price', 'manual_date', 'security_name']:
             if c in df_corr.columns:
                 df_corr[c] = df_corr[c].astype(str).str.strip().replace(['nan', 'NaN', 'None'], 'Unknown')
@@ -163,6 +189,11 @@ def run_pipeline():
     for f in INPUT_FILES:
         if f.exists():
             temp_df = pd.read_csv(f)
+            temp_df.columns = temp_df.columns.str.strip()
+            
+            if 'EURINR_rate' in temp_df.columns:
+                temp_df.rename(columns={'EURINR_rate': 'eurinr_rate'}, inplace=True)
+                
             platform_name = f.stem.replace("portfolio_", "").replace("_input", "").replace("_", " ").title()
             temp_df['broker'] = platform_name
             
@@ -192,7 +223,9 @@ def run_pipeline():
                     'broker': row['platform'] if row['platform'] != 'Unknown' else 'Manual_Adjustment',
                     'tax_withheld': row.get('manual_tax_withheld', 0.0), 
                     'broker_fee': row.get('manual_broker_fee', 0.0), 
-                    'dividend_after_taxes': row.get('manual_dividend_after_taxes', 0.0)
+                    'dividend_after_taxes': row.get('manual_dividend_after_taxes', 0.0),
+                    'annual_return': row.get('manual_annual_return', 0.0),
+                    'eurinr_rate': row.get('manual_eurinr_rate', 0.0)
                 })
             df = pd.concat([df, pd.DataFrame(manual_records)], ignore_index=True)
 
@@ -202,9 +235,10 @@ def run_pipeline():
     df['clean_name'] = df['security_name'].apply(clean_name)
     df['year'] = df['date'].dt.year
 
-    for col in ['quantity', 'price', 'tax_withheld', 'broker_fee', 'dividend_after_taxes']:
+    numeric_cols = ['quantity', 'price', 'tax_withheld', 'broker_fee', 'dividend_after_taxes', 'annual_return', 'eurinr_rate']
+    for col in numeric_cols:
         if col in df.columns: 
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+            df[col] = df[col].apply(clean_numeric_value)
 
     df = df.sort_values(by=['date', 'type'], ascending=[True, False])
 
@@ -220,7 +254,12 @@ def run_pipeline():
             if matches: name_to_isin[name] = name_to_isin[matches[0]]
 
     df['isin'] = df.apply(lambda r: name_to_isin.get(r['clean_name'], r['isin']), axis=1)
-    df['asset_id'] = np.where(df['isin'].str.lower() != 'crypto currency', df['isin'], df['clean_name'])
+    
+    df['asset_id'] = np.where(
+        df['isin'].str.lower() != 'crypto currency', 
+        np.where(df['isin'].isna() | (df['isin'] == ''), df['clean_name'], df['isin']), 
+        df['clean_name']
+    )
     df['group_id'] = df['asset_id'] + "_" + df['broker'].astype(str)
 
     raw_active_portfolio, closed_portfolio_log = [], []
@@ -231,7 +270,9 @@ def run_pipeline():
         fifo_queue = []
         broker_name = group['broker'].iloc[0]
         isin = group['isin'].iloc[0]
-        display_name = group['security_name'].iloc[0].replace("_", " ")
+
+        raw_name = group['security_name'].iloc[0]
+        display_name = str(raw_name).replace("_", " ") if pd.notna(raw_name) else "Unknown"
         last_buy_date = pd.NaT
         
         for _, row in group.iterrows():
@@ -240,7 +281,13 @@ def run_pipeline():
             if row['tax_withheld'] > 0: tax_logs.append({'Year': row['year'], 'Tax Amount (EUR)': row['tax_withheld']})
             
             if row['type'] == 'buy':
-                fifo_queue.append({'qty': qty, 'price': price, 'date': row['date']})
+                fifo_queue.append({
+                    'qty': qty, 
+                    'price': price, 
+                    'date': row['date'],
+                    'annual_return': row.get('annual_return', 0.0),
+                    'eurinr_rate': row.get('eurinr_rate', 0.0)
+                })
                 last_buy_date = row['date']
             elif row['type'] == 'sell':
                 qty_to_sell, total_cost_basis_sold = qty, 0.0
@@ -272,16 +319,22 @@ def run_pipeline():
                     dividend_logs.append({'Year': row['year'], 'Dividend Amount (EUR)': row['dividend_after_taxes']})
                 
         remaining_qty = sum(item['qty'] for item in fifo_queue)
-        
-        # Increased precision zero-cutoff here as well for crypto
         if remaining_qty < 1e-8: remaining_qty = 0.0
         
-        avg_buy_price_remaining = (sum(item['qty'] * item['price'] for item in fifo_queue) / remaining_qty) if remaining_qty > 0 else 0.0
-        
         if remaining_qty > 0:
+            ref_item = fifo_queue[0]
+            buy_subset = group[group['type'] == 'buy']
+            last_valid_price = buy_subset['price'].iloc[-1] if not buy_subset.empty else ref_item['price']
+            
             raw_active_portfolio.append({
-                'ISIN': isin, 'Security Name': display_name, 'Asset_ID': group['asset_id'].iloc[0],
-                'Last Bought Date': last_buy_date, 'Current Quantity': remaining_qty, 
+                'ISIN': isin if pd.notnull(isin) else 'Unknown', 
+                'Security Name': display_name, 
+                'Asset_ID': group['asset_id'].iloc[0],
+                'Last Bought Date': last_buy_date, 
+                'Current Quantity': remaining_qty,
+                'Initial Purchase Price': last_valid_price,
+                'Annual_Return_Rate': ref_item['annual_return'],
+                'Historical_EURINR_Rate': ref_item['eurinr_rate'],
                 'Total Cost Basis Value': sum(item['qty'] * item['price'] for item in fifo_queue)
             })
 
@@ -291,65 +344,106 @@ def run_pipeline():
         for asset_id, group in df_raw_active.groupby('Asset_ID'):
             total_qty = group['Current Quantity'].sum()
             total_cost = group['Total Cost Basis Value'].sum()
-            avg_price = total_cost / total_qty if total_qty > 0 else 0.0
+            avg_price = total_cost / total_qty if total_qty > 0 else group['Initial Purchase Price'].iloc[0]
             max_date = group['Last Bought Date'].max()
+            
             consolidated_active.append({
                 'ISIN': group['ISIN'].iloc[0],
                 'Security Name': group['Security Name'].iloc[0],
                 'Last Bought Date': max_date.strftime('%Y-%m-%d') if pd.notnull(max_date) else 'Unknown',
                 'Current Quantity': total_qty,
-                'Average Buy Price (EUR)': avg_price
+                'Average Buy Price (EUR)': avg_price,
+                'Native_Fallback_Price': group['Initial Purchase Price'].iloc[0],
+                'Annual_Return_Rate': group['Annual_Return_Rate'].iloc[0],
+                'Historical_EURINR_Rate': group['Historical_EURINR_Rate'].iloc[0]
             })
+
+    fix_lookup_matrix = {}
+    if Industry_Sector_Country_Fix_FILE.exists():
+        df_fix = pd.read_csv(Industry_Sector_Country_Fix_FILE, encoding='latin-1')
+        df_fix.columns = df_fix.columns.str.strip()
+        for _, row in df_fix.iterrows():
+            meta_payload = {
+                'sector': clean_metadata_string(row.get('sector', 'Unknown')),
+                'industry': clean_metadata_string(row.get('industry', 'Unknown')),
+                'country': clean_metadata_string(row.get('country', 'Unknown'))
+            }
+            f_isin = str(row.get('isin', '')).strip().upper()
+            f_name = clean_name(row.get('security_name', row.get('name', '')))
+            
+            if f_isin and f_isin != 'NAN': 
+                fix_lookup_matrix[f_isin] = meta_payload
+            if f_name and f_name != 'Unknown': 
+                fix_lookup_matrix[f_name] = meta_payload
 
     print("Connecting to live metric streams...")
     for asset in consolidated_active:
         name_lower = asset['Security Name'].lower()
-        isin_val = str(asset['ISIN']).upper().strip()
+        isin_upper = str(asset['ISIN']).upper().strip()
+        name_clean = clean_name(asset['Security Name'])
 
-        if "real estate" in name_lower or isin_val == "REAL ESTATE":
-            eur_inr = get_live_fx_rate("EUR", "INR")
-            inr_eur = get_live_fx_rate("INR", "EUR")
+        meta = fix_lookup_matrix.get(isin_upper, fix_lookup_matrix.get(name_clean, {}))
+        m_sector = meta.get('sector', 'Unknown')
+        m_industry = meta.get('industry', 'Unknown')
+        m_country = meta.get('country', 'Unknown')
+
+        is_real_estate = "real estate" in name_lower or isin_upper in ["REAL_ESTATE", "REAL ESTATE"]
+        is_bond = "bond" in name_lower or isin_upper in ["BONDS", "BOND"]
+
+        if is_real_estate or is_bond:
+            days_held = 0
             buy_date_str = asset['Last Bought Date']
-            years_held = 0
             if buy_date_str != 'Unknown':
                 buy_date = datetime.strptime(buy_date_str, '%Y-%m-%d')
-                years_held = (datetime.now() - buy_date).days / 365.25
+                days_held = (datetime.now() - buy_date).days
+                if days_held < 0: days_held = 0
 
-            initial_inr_price = asset['Average Buy Price (EUR)'] * 90.3753
-            current_inr_price = initial_inr_price * ((1 + 0.135) ** years_held)
-            current_eur_price = current_inr_price * inr_eur
+            annual_return_pct = asset.get('Annual_Return_Rate', 0.0)
+            daily_growth_factor = (1 + (annual_return_pct / 100.0)) ** (days_held / 365.25)
+
+            hist_rate = asset.get('Historical_EURINR_Rate', 0.0)
+            if hist_rate > 0:
+                initial_inr_basis = asset['Average Buy Price (EUR)'] * hist_rate
+                current_inr_valuation = initial_inr_basis * daily_growth_factor
+                live_inr_to_eur = get_live_fx_rate("INR", "EUR")
+                current_eur_price = current_inr_valuation * live_inr_to_eur
+                native_currency = "INR"
+            else:
+                current_eur_price = asset['Average Buy Price (EUR)'] * daily_growth_factor
+                native_currency = "EUR"
 
             asset.update({
-                'Current Price (EUR)': current_eur_price, 'Native Currency': 'EUR',
-                'Sector': 'Real Estate', 'Industry': 'Property', 'Country': 'India',
+                'Current Price (EUR)': current_eur_price, 
+                'Native Currency': native_currency,
+                'Sector': m_sector if m_sector != 'Unknown' else ('Real Estate' if is_real_estate else 'Fixed Income'), 
+                'Industry': m_industry if m_industry != 'Unknown' else ('Property' if is_real_estate else 'Bonds'), 
+                'Country': m_country if m_country != 'Unknown' else ('India' if hist_rate > 0 else 'Unknown'),
                 'Unrealized PnL (EUR)': (current_eur_price - asset['Average Buy Price (EUR)']) * asset['Current Quantity']
             })
             continue
 
-        if isin_val in ["GC=F", "SI=F"] or "physical gold" in name_lower or "physical silver" in name_lower:
-            target_ticker = "GC=F" if ("gold" in name_lower or isin_val == "GC=F") else "SI=F"
+        if isin_upper in ["GC=F", "SI=F"] or "physical gold" in name_lower or "physical silver" in name_lower:
+            target_ticker = "GC=F" if ("gold" in name_lower or isin_upper == "GC=F") else "SI=F"
             try:
                 t = yf.Ticker(target_ticker)
-                
                 hist = t.history(period="5d")
                 price_usd_per_oz = float(hist["Close"].dropna().iloc[-1]) if not hist.empty else 0.0
 
                 if price_usd_per_oz > 0:
-                    # Convert global Troy Ounce standard to strictly Grams
                     price_usd_per_gram = price_usd_per_oz / 31.1034768
-
                     if target_ticker == "GC=F":
                         price_usd_per_gram = price_usd_per_gram * (22.0 / 24.0)
 
                     usd_inr = get_live_fx_rate("USD", "INR")
                     inr_eur = get_live_fx_rate("INR", "EUR")
-
                     price_inr_taxed = (price_usd_per_gram * usd_inr) * 1.185
                     current_eur_price = price_inr_taxed * inr_eur
 
                     asset.update({
                         'Current Price (EUR)': current_eur_price, 'Native Currency': 'USD',
-                        'Sector': 'Commodities', 'Industry': 'Precious Metals', 'Country': 'Global',
+                        'Sector': m_sector if m_sector != 'Unknown' else 'Commodities', 
+                        'Industry': m_industry if m_industry != 'Unknown' else 'Precious Metals', 
+                        'Country': m_country if m_country != 'Unknown' else 'Global',
                         'Unrealized PnL (EUR)': (current_eur_price - asset['Average Buy Price (EUR)']) * asset['Current Quantity']
                     })
                     continue
@@ -359,14 +453,22 @@ def run_pipeline():
         if info:
             asset.update({
                 'Current Price (EUR)': info['price'], 'Native Currency': info['currency'],
-                'Sector': info['sector'], 'Industry': info['industry'], 'Country': info['country'],
+                'Sector': m_sector if m_sector != 'Unknown' else info['sector'], 
+                'Industry': m_industry if m_industry != 'Unknown' else info['industry'], 
+                'Country': m_country if m_country != 'Unknown' else info['country'],
                 'Unrealized PnL (EUR)': (info['price'] - asset['Average Buy Price (EUR)']) * asset['Current Quantity']
             })
         else:
+            fallback_price = asset.get('Native_Fallback_Price', 0.0)
             asset.update({
-                'Current Price (EUR)': 0.0, 'Native Currency': 'Unknown', 
-                'Sector': 'Unknown', 'Industry': 'Unknown', 'Country': 'Unknown', 'Unrealized PnL (EUR)': 0.0
+                'Current Price (EUR)': fallback_price, 'Native Currency': 'EUR', 
+                'Sector': m_sector, 'Industry': m_industry, 'Country': m_country, 
+                'Unrealized PnL (EUR)': 0.0
             })
+
+    for asset in consolidated_active:
+        for extra_key in ['Native_Fallback_Price', 'Annual_Return_Rate', 'Historical_EURINR_Rate']:
+            asset.pop(extra_key, None)
 
     df_div = pd.DataFrame(dividend_logs)
     if not df_div.empty:
@@ -394,35 +496,6 @@ def run_pipeline():
 
     cols_to_round = ['Current Quantity', 'Average Buy Price (EUR)', 'Current Price (EUR)', 'Unrealized PnL (EUR)']
 
-    # --- Apply Manual Industry/Sector/Country Fixes ---
-    if Industry_Sector_Country_Fix_FILE.exists():
-        df_fix = pd.read_csv(Industry_Sector_Country_Fix_FILE)
-        # Ensure ISINs are strings for reliable merging
-        df_fix['isin'] = df_fix['isin'].astype(str).str.strip().str.upper()
-        
-        # Merge the manual data into the active portfolio dataframe
-        # We use 'left' join to keep existing data and fill missing gaps
-        df_active_out['ISIN_UPPER'] = df_active_out['ISIN'].astype(str).str.strip().str.upper()
-        df_active_out = df_active_out.merge(
-            df_fix[['isin', 'sector', 'industry', 'country']], 
-            left_on='ISIN_UPPER', 
-            right_on='isin', 
-            how='left'
-        )
-        
-        # Fill original columns with manual data if YFinance returned 'Unknown'
-        for col in ['sector', 'industry', 'country']:
-            if col in df_active_out.columns:
-                manual_col = col if col in df_fix.columns else None
-                if manual_col:
-                    df_active_out[col.capitalize()] = df_active_out[col.capitalize()].mask(
-                        (df_active_out[col.capitalize()].isna()) | (df_active_out[col.capitalize()] == 'Unknown'), 
-                        df_active_out[manual_col]
-                    )
-        
-        # Cleanup temp columns
-        df_active_out.drop(columns=['isin', 'ISIN_UPPER', 'sector', 'industry', 'country'], errors='ignore', inplace=True)
-    
     if not df_active_out.empty:
         for col in cols_to_round:
             if col in df_active_out.columns:

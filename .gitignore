@@ -4,6 +4,7 @@ Run_Pipeline.bat
 src/etf1_synthetic_index_creator.py
 
 config/
+assets/
 
 data/
 *.csv

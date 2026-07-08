@@ -22,50 +22,61 @@ class PortfolioMarketSimulator:
         self.rng = np.random.default_rng()
 
     def _fetch_historical_fx(self, ticker: str = 'EURINR=X') -> pd.Series:
-            if self.fx_series is not None:
-                return self.fx_series
-    
-            logger.info(f"Checking historical FX data for {ticker}...")
-            file_path = self.market_data_dir / f"{ticker}_history.csv"
-    
-            if file_path.exists():
-                existing_df = pd.read_csv(file_path, index_col=0, parse_dates=True)
-                existing_series = existing_df.iloc[:, 0]
-                
-                last_date = existing_series.index.max()
-                
-                if last_date >= self.end_date:
-                    logger.info("Local FX data is already up to date.")
-                    combined_series = existing_series
-                else:
-                    # Fetch only the gap (from the day after last local record up to requested end_date)
-                    fetch_start = last_date + pd.Timedelta(days=1)
-                    logger.info(f"Local data ends at {last_date.strftime('%Y-%m-%d')}. Fetching gap from {fetch_start.strftime('%Y-%m-%d')} to {self.end_date.strftime('%Y-%m-%d')}...")
-                    
-                    new_data = self._download_yf_data(ticker, fetch_start, self.end_date)
-                    
-                    combined_series = pd.concat([existing_series, new_data]).drop_duplicates()
-                    combined_series.sort_index(inplace=True)
-                    combined_series.to_frame(name='Close').to_csv(file_path)
-            else:
-                logger.info(f"No local FX cache found for {ticker}. Downloading full range from {self.start_date} to {self.end_date}...")
-                combined_series = self._download_yf_data(ticker, self.start_date, self.end_date)
-                combined_series.to_frame(name='Close').to_csv(file_path)
-    
-            series = combined_series.reindex(self.dates).ffill().bfill()
-            if isinstance(series, pd.DataFrame):
-                series = series.iloc[:, 0]
-                
-            self.fx_series = series
+        if self.fx_series is not None:
             return self.fx_series
+    
+        logger.info(f"Checking historical FX data for {ticker}...")
+        file_path = self.market_data_dir / f"{ticker}_history.csv"
+    
+        if file_path.exists():
+            existing_df = pd.read_csv(file_path, index_col=0, parse_dates=True)
+            existing_series = existing_df.iloc[:, 0]
+            
+            last_date = existing_series.index.max()
+            
+            if last_date >= self.end_date:
+                logger.info("Local FX data is already up to date.")
+                combined_series = existing_series
+            else:
+                # Fetch only the gap (from the day after last local record up to requested end_date)
+                fetch_start = last_date + pd.Timedelta(days=1)
+                logger.info(f"Local data ends at {last_date.strftime('%Y-%m-%d')}. Fetching gap from {fetch_start.strftime('%Y-%m-%d')} to {self.end_date.strftime('%Y-%m-%d')}...")
+                
+                new_data = self._download_yf_data(ticker, fetch_start, self.end_date)
+                
+                if not new_data.empty:
+                    combined_series = pd.concat([existing_series, new_data]).drop_duplicates()
+                else:
+                    combined_series = existing_series
+                    
+                combined_series.sort_index(inplace=True)
+                combined_series.to_frame(name='Close').to_csv(file_path)
+        else:
+            logger.info(f"No local FX cache found for {ticker}. Downloading full range from {self.start_date} to {self.end_date}...")
+            combined_series = self._download_yf_data(ticker, self.start_date, self.end_date)
+            combined_series.to_frame(name='Close').to_csv(file_path)
+    
+        if combined_series.index.duplicated().any():
+            combined_series = combined_series[~combined_series.index.duplicated(keep='first')]
+        
+        series = combined_series.reindex(self.dates).ffill().bfill()
+    
+        if isinstance(series, pd.DataFrame):
+            series = series.iloc[:, 0]
+            
+        self.fx_series = series
+        return self.fx_series
+
 
     def _download_yf_data(self, ticker: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.Series:
         """Helper method to download and extract the Close series from yfinance."""
+        
         fx_data = yf.download(ticker, start=start, end=end + pd.Timedelta(days=1), progress=False)
         
         if fx_data.empty:
-            raise ValueError(f"No data returned from yfinance for ticker {ticker} between {start} and {end}.")
-        
+            logger.warning(f"No data returned from yfinance for ticker {ticker} between {start.strftime('%Y-%m-%d')} and {end.strftime('%Y-%m-%d')}. Relying on ffill.")
+            return pd.Series(dtype=float)
+                
         if isinstance(fx_data.columns, pd.MultiIndex):
             if 'Close' in fx_data.columns.levels[0]:
                 close_series = fx_data['Close']

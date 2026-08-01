@@ -1,8 +1,8 @@
 """
-Loads all processed asset class datasets.
-Returns a clean, unified pandas DataFrame or continuous dictionary.
+Consolidates raw asset datasets (Stocks, ETFs, Crypto, Commodities, Bonds, and Real Estate), 
+normalizes dates against the master stock business calendar to strip out weekends and holidays, 
+and produces a unified, clean master DataFrame.
 """
-
 from pathlib import Path
 import pandas as pd
 from src.config import FILES
@@ -51,8 +51,8 @@ def load_processed_data() -> dict:
 def merge_and_normalize_data(data_dict: dict) -> pd.DataFrame:
     """
     1. Outer joins all asset DataFrames on 'Date' into a single DataFrame.
-    2. Resamples/reindexes across a complete daily calendar sequence.
-    3. Forward-fills missing values (e.g., holidays/weekends for tradable assets).
+    2. Aligns the calendar strictly to stock trading days (drops weekends/holidays).
+    3. Forward/back-fills missing values safely.
     """
     # Merge all asset datasets into a single unified DataFrame
     merged_df = None
@@ -61,23 +61,18 @@ def merge_and_normalize_data(data_dict: dict) -> pd.DataFrame:
             merged_df = df.copy()
         else:
             merged_df = pd.merge(merged_df, df, on="Date", how="outer")
-            
+
+    # Use Stocks as the master trading calendar to drop weekends and holidays
+    trading_dates = data_dict["stocks"]["Date"]
+    merged_df = merged_df[merged_df["Date"].isin(trading_dates)].copy()
+    
     merged_df.sort_values("Date", inplace=True)
     
-    # Create a complete daily date range from minimum to maximum date
-    min_date = merged_df["Date"].min()
-    max_date = merged_df["Date"].max()
-    full_date_range = pd.date_range(start=min_date, end=max_date, freq="D", name="Date")
-    
-    # Set Date as index, reindex to complete calendar, and forward fill
+    # Forward-fill any gaps, then backfill leading NaNs
     merged_df.set_index("Date", inplace=True)
-    merged_df = merged_df.reindex(full_date_range)
-    
-    # Forward-fill prices/values for weekends/holidays, then backfill remaining leading NaNs
     merged_df = merged_df.ffill().bfill()
-    
-    # Reset index to restore 'Date' as a regular column
     merged_df.reset_index(inplace=True)
+    
     return merged_df
 
 def align_start_date(df: pd.DataFrame, data_dict: dict = None) -> pd.DataFrame:
@@ -108,3 +103,15 @@ def print_summary(df: pd.DataFrame):
     print("Column List:")
     print(list(df.columns))
     print("=" * 70)
+
+def build_master_dataset() -> pd.DataFrame:
+    """
+    End-to-end pipeline wrapper: Loads, merges, aligns to trading days, 
+    trims start dates, and prints a summary.
+    """
+    raw_data = load_processed_data()
+    master_df = merge_and_normalize_data(raw_data)
+    master_df = align_start_date(master_df, data_dict=raw_data)
+    print_summary(master_df)
+    
+    return master_df

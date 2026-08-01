@@ -1,11 +1,8 @@
 """
 Downloads Yahoo Finance features for all tradable assets.
-Downloads: Open, High, Low, Volume, Dividends, Stock Splits.
-Drops: Close, Adj Close.
 Converts all USD financial values to EUR automatically.
-Handles incremental updates efficiently.
-
-Output: Long-format dataframe
+ALIGNS TO DAILY BUSINESS CALENDAR: Uses Stocks as a reference calendar.
+Smashes weekend/holiday crypto data into the next valid business day (Monday).
 """
 
 from __future__ import annotations
@@ -17,7 +14,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from src.config import (FILES, FEATURE_DIR, SYNTHETIC_ETFS, YFINANCE_SLEEP)
+from src.config import (FILES, FEATURE_DIR, SYNTHETIC_ETFS, YFINANCE_SLEEP, YF_RAW_FILE)
 
 # =============================================================================
 # Directories & Logging
@@ -27,7 +24,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 FX_DIR = DATA_DIR / "market_data_for_risk_analysis"
 FX_DIR.mkdir(parents=True, exist_ok=True)
 EURUSD_FILE = FX_DIR / "EURUSD.csv"
-FEATURE_FILE = FEATURE_DIR / "yfinance_raw_features.parquet"
+FEATURE_FILE = YF_RAW_FILE
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,14 +40,16 @@ ASSET_CLASS_FILES = {
 }
 
 # =============================================================================
+# Clean Date Helper
+# =============================================================================
+def clean_date_series(series: pd.Series) -> pd.Series:
+    """Forces dates to be purely Year-Month-Day at 00:00:00 with no timezones."""
+    return pd.to_datetime(series, utc=True).dt.tz_convert(None).dt.normalize()
+
+# =============================================================================
 # Incremental & FX Logic
 # =============================================================================
-
 def update_and_load_eurusd() -> pd.Series:
-    """
-    Updates the EURUSD.csv file incrementally and returns a Date-indexed Series 
-    of the exchange rate for vectorized conversions.
-    """
     today = pd.Timestamp.today().normalize()
     
     if EURUSD_FILE.exists():
@@ -75,24 +74,21 @@ def update_and_load_eurusd() -> pd.Series:
             fx_df.drop_duplicates(subset=["Date"], keep="last", inplace=True)
             fx_df.to_csv(EURUSD_FILE, index=False)
 
+    fx_df["Date"] = clean_date_series(fx_df["Date"])
     fx_df.set_index("Date", inplace=True)
     return fx_df["EURUSD"]
 
-
 def get_incremental_dates() -> tuple[pd.Timestamp, pd.Timestamp, pd.DataFrame]:
-    """
-    Determines start date based on existing parquet file to avoid re-downloading.
-    Returns (start_date, end_date, existing_dataframe).
-    """
     today = pd.Timestamp.today().normalize()
     
     if FEATURE_FILE.exists():
         existing_df = pd.read_parquet(FEATURE_FILE)
-        last_date = pd.to_datetime(existing_df["Date"]).max()
-        start_date = last_date + pd.Timedelta(days=1)
+        existing_df["Date"] = clean_date_series(existing_df["Date"])
+        last_date = existing_df["Date"].max()
+        # Roll back 14 days to catch any weekend data that needs to merge into Monday
+        start_date = last_date - pd.Timedelta(days=14)
         return start_date, today, existing_df
     else:
-        # Fallback to the earliest date from processed files if no parquet exists
         starts = []
         for file in ASSET_CLASS_FILES.values():
             df = pd.read_csv(file)
@@ -100,9 +96,8 @@ def get_incremental_dates() -> tuple[pd.Timestamp, pd.Timestamp, pd.DataFrame]:
         return min(starts), today, pd.DataFrame()
 
 # =============================================================================
-# Download & Processing Helpers
+# Download & Cleaning Helpers
 # =============================================================================
-
 def get_tickers() -> pd.DataFrame:
     records = []
     for asset_class, file in ASSET_CLASS_FILES.items():
@@ -110,58 +105,32 @@ def get_tickers() -> pd.DataFrame:
         tickers = list(df.columns[1:])
         for ticker in tickers:
             records.append({"Ticker": ticker, "Asset_Class": asset_class})
-
     return pd.DataFrame(records).drop_duplicates().sort_values("Ticker").reset_index(drop=True)
-
-
-def download_single_ticker(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
-    try:
-        data = yf.download(ticker, start=start_date, end=end_date, auto_adjust=False, progress=False, actions=True, threads=False)
-        if data.empty:
-            return pd.DataFrame()
-        data.reset_index(inplace=True)
-        return data
-    except Exception as e:
-        logger.error(f"{ticker} download failed : {e}")
-        return pd.DataFrame()
 
 def flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
     if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [col[0] for col in df.columns]
+        df.columns = df.columns.get_level_values(0)
     return df
 
 def clean_and_convert(df: pd.DataFrame, ticker: str, asset_class: str, fx_series: pd.Series) -> pd.DataFrame:
-    """
-    Standardizes names, drops Close/Adj Close, and applies EUR conversion.
-    """
-    if df.empty:
-        return df
+    if df.empty: return df
 
-    df = flatten_columns(df)
+    df["Date"] = clean_date_series(df["Date"])
+    keep_cols = ["Date", "Open", "High", "Low", "Close", "Volume", "Dividends", "Stock Splits"]
+    df = df[[c for c in keep_cols if c in df.columns]].copy()
     
-    # 1. Keep only the following columns
-    keep = ["Date", "Open", "High", "Low", "Volume", "Dividends", "Stock Splits"]
-    existing = [c for c in keep if c in df.columns]
-    df = df[existing].copy()
-    
-    # 2. Get asset currency to check if FX conversion is needed
     try:
         currency = yf.Ticker(ticker).fast_info.get("currency", "EUR")
-    except:
-        currency = "USD" # default fallback
+    except Exception:
+        currency = "USD"
         
-    # 3. Convert USD values to EUR
     if currency == "USD":
-        df = df.merge(fx_series, on="Date", how="left")
-        # ffill and bfill handles crypto/weekends where FX market is closed
+        df = df.merge(fx_series.reset_index(), on="Date", how="left")
         df["EURUSD"] = df["EURUSD"].ffill().bfill() 
         
-        financial_cols = ["Open", "High", "Low", "Dividends"]
-        for col in financial_cols:
+        for col in ["Open", "High", "Low", "Close", "Dividends"]:
             if col in df.columns:
-                # 1 EUR = X USD  ==> EUR Value = USD Value / X
                 df[col] = df[col] / df["EURUSD"]
-                
         df.drop(columns=["EURUSD"], inplace=True)
     
     df["Ticker"] = ticker
@@ -169,14 +138,8 @@ def clean_and_convert(df: pd.DataFrame, ticker: str, asset_class: str, fx_series
     df["Data_Source"] = "YahooFinance"
     return df
 
-# =============================================================================
-# Main Download Function
-# =============================================================================
-
 def download_all_features(start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.DataFrame:
-    if start_date >= end_date:
-        logger.info("Data is already up to date. No new downloads needed.")
-        return pd.DataFrame()
+    if start_date >= end_date: return pd.DataFrame()
 
     fx_series = update_and_load_eurusd()
     tickers_df = get_tickers()
@@ -188,93 +151,186 @@ def download_all_features(start_date: pd.Timestamp, end_date: pd.Timestamp) -> p
         ticker = row["Ticker"]
         asset_class = row["Asset_Class"]
 
-        if asset_class == "ETF" and ticker in SYNTHETIC_ETFS:
-            continue
+        if asset_class == "ETF" and ticker in SYNTHETIC_ETFS: continue
 
-        df = download_single_ticker(ticker, start_date.strftime("%Y-%m-%d"), (end_date + pd.Timedelta(days=1)).strftime("%Y-%m-%d"))
-        
-        if not df.empty:
+        data = yf.download(ticker, start=start_date.strftime("%Y-%m-%d"), end=(end_date + pd.Timedelta(days=1)).strftime("%Y-%m-%d"), progress=False, actions=True)
+        if not data.empty:
+            data.reset_index(inplace=True)
+            df = flatten_columns(data)
             df = clean_and_convert(df, ticker, asset_class, fx_series)
             all_data.append(df)
-            
         time.sleep(YFINANCE_SLEEP)
 
-    if not all_data:
+    return pd.concat(all_data, ignore_index=True) if all_data else pd.DataFrame()
+
+def append_synthetic_etfs(start_date: pd.Timestamp) -> pd.DataFrame:
+    if not SYNTHETIC_ETFS: 
         return pd.DataFrame()
 
-    master = pd.concat(all_data, ignore_index=True)
-    return master
-
-
-def append_synthetic_etfs(yahoo_df: pd.DataFrame, start_date: pd.Timestamp) -> pd.DataFrame:
-    """
-    Since Close is dropped, we map ETF prices to Open/High/Low for consistency.
-    """
-    if len(SYNTHETIC_ETFS) == 0:
-        return yahoo_df
-
-    etf_prices = pd.read_csv(FILES["etfs"])
-    etf_prices.rename(columns={etf_prices.columns[0]: "Date"}, inplace=True)
-    etf_prices["Date"] = pd.to_datetime(etf_prices["Date"], errors="coerce")
+    tickers_to_process = [SYNTHETIC_ETFS] if isinstance(SYNTHETIC_ETFS, str) else SYNTHETIC_ETFS
     
-    # Filter for the incremental date range
-    etf_prices = etf_prices[etf_prices["Date"] >= start_date]
-
+    # Check for existing feature file and load it once
+    existing_df = None
+    if FEATURE_FILE.exists():
+        existing_df = pd.read_parquet(FEATURE_FILE)
+        if "Date" in existing_df.columns:
+            existing_df["Date"] = pd.to_datetime(existing_df["Date"])
+            
+    # load the CSV only if needed for tickers without existing history
+    etf_prices = None
     synthetic_frames = []
-    for ticker in SYNTHETIC_ETFS:
-        if ticker not in etf_prices.columns:
-            continue
 
-        temp = pd.DataFrame()
-        temp["Date"] = etf_prices["Date"]
-        temp["Open"] = np.nan #etf_prices[ticker]  # Map price to Open, High, Low
-        temp["High"] = np.nan #etf_prices[ticker]
-        temp["Low"] = np.nan #etf_prices[ticker]
-        temp["Volume"] = np.nan
-        temp["Dividends"] = np.nan
-        temp["Stock Splits"] = np.nan
-        temp["Ticker"] = ticker
-        temp["Asset_Class"] = "ETF"
-        temp["Data_Source"] = "Synthetic"
-        
-        temp.dropna(subset=["Open"], inplace=True) # Drop blank dates
-        synthetic_frames.append(temp)
+    for ticker in tickers_to_process:
+        # Check if we have existing data for this specific ticker
+        has_existing_data = False
+        if existing_df is not None and "Ticker" in existing_df.columns:
+            ticker_mask = existing_df["Ticker"] == ticker
+            if ticker_mask.any():
+                has_existing_data = True
 
-    if synthetic_frames:
-        yahoo_df = pd.concat([yahoo_df, *synthetic_frames], ignore_index=True)
+        if has_existing_data:
+            # --- CASE 1: Ticker exists in feature file. Fetch new data from yfinance ---
+            last_date = existing_df.loc[ticker_mask, "Date"].max()
+            fetch_start = (last_date + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+            
+            ticker_obj = yf.Ticker(ticker)
+            yf_data = ticker_obj.history(start=fetch_start, auto_adjust=True)
+            
+            if not yf_data.empty:
+                yf_data.reset_index(inplace=True)
+                
+                temp = pd.DataFrame({
+                    "Date": clean_date_series(yf_data["Date"]),
+                    "Open": np.nan, "High": np.nan, 
+                    "Low": np.nan, "Close": yf_data["Close"],
+                    "Volume": np.nan, "Dividends": np.nan, "Stock Splits": np.nan,
+                    "Ticker": ticker, "Asset_Class": "ETF", "Data_Source": "Synthetic"
+                })
+                
+                temp.dropna(subset=["Close"], inplace=True)
+                if not temp.empty:
+                    synthetic_frames.append(temp)
+                    
+        else:
+            # --- CASE 2: Ticker NOT in feature file. Use original CSV fallback logic ---
+            if etf_prices is None:
+                etf_prices = pd.read_csv(FILES["etfs"])
+                etf_prices["Date"] = clean_date_series(etf_prices["Date"])
 
-    yahoo_df.sort_values(["Ticker", "Date"], inplace=True)
-    yahoo_df.reset_index(drop=True, inplace=True)
-    return yahoo_df
+            if ticker not in etf_prices.columns:
+                continue
+            
+            temp = pd.DataFrame({
+                "Date": etf_prices["Date"],
+                "Open": np.nan, "High": np.nan, 
+                "Low": np.nan, "Close": etf_prices[ticker],
+                "Volume": np.nan, "Dividends": np.nan, "Stock Splits": np.nan,
+                "Ticker": ticker, "Asset_Class": "ETF", "Data_Source": "Synthetic"
+            })
+            
+            temp.dropna(subset=["Close"], inplace=True)
+            if not temp.empty:
+                synthetic_frames.append(temp)
+
+    return pd.concat(synthetic_frames, ignore_index=True) if synthetic_frames else pd.DataFrame()
+
+# =============================================================================
+# Core Logic: Master Calendar Alignment (Smashes Weekends)
+# =============================================================================
+def align_to_business_days(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Uses Stocks as the master calendar. Any crypto date (weekend/holiday) 
+    is rolled forward to the NEXT valid Stock trading day, then grouped.
+    This safely deletes weekend dates from the final output.
+    """
+    if df.empty: return df
+
+    df["Date"] = clean_date_series(df["Date"])
+
+    # 1. Establish the "Master Calendar" using Stock Market dates
+    stock_data = df[df["Asset_Class"] == "Stocks"]
+    if not stock_data.empty:
+        valid_dates = pd.Series(stock_data["Date"].unique()).sort_values()
+    else:
+        # Fallback if no stocks exist in the chunk
+        valid_dates = pd.Series(pd.bdate_range(df["Date"].min(), df["Date"].max() + pd.Timedelta(days=5))).dt.normalize()
+
+    # 2. Map every single date (including Sat/Sun) to the NEXT valid stock date
+    master_dates_df = pd.DataFrame({"Business_Date": valid_dates, "Date": valid_dates})
+    all_dates = pd.DataFrame({"Date": df["Date"].drop_duplicates().sort_values()})
+
+    # Forward direction means Friday -> Friday, Saturday -> Monday, Sunday -> Monday
+    date_mapping = pd.merge_asof(all_dates, master_dates_df, on="Date", direction="forward")
+    df = df.merge(date_mapping, on="Date", how="left")
+    
+    # Drop rows at the end of the dataset if Monday hasn't happened yet (e.g., if you run this on Sunday)
+    df.dropna(subset=["Business_Date"], inplace=True)
+
+    # 3. Group by Ticker and the new Business_Date (Automatically drops weekend rows)
+    agg_rules = {
+        "Open": "first",     
+        "High": "max",       
+        "Low": "min",        
+        "Close": "last",     
+        "Volume": lambda x: x.sum(min_count=1),     
+        "Dividends": lambda x: x.sum(min_count=1),
+        "Stock Splits": lambda x: x.sum(min_count=1),
+        "Asset_Class": "first",
+        "Data_Source": "first",
+    }
+    agg_rules = {k: v for k, v in agg_rules.items() if k in df.columns}
+
+    aligned_df = (
+        df.sort_values(["Ticker", "Date"])
+          .groupby(["Ticker", "Business_Date"])
+          .agg(agg_rules)
+          .reset_index()
+    )
+
+    # Rename the mapped column back to 'Date'
+    aligned_df.rename(columns={"Business_Date": "Date"}, inplace=True)
+    return aligned_df
 
 # =============================================================================
 # Pipeline Trigger
 # =============================================================================
-
 def fetch_yfinance_features() -> pd.DataFrame:
     logger.info("=" * 70)
-    logger.info("Starting Yahoo Finance Feature Download (Incremental & EUR Converted)")
+    logger.info("Starting Download & Business Calendar Alignment (Weekend Smashing)")
     logger.info("=" * 70)
     
     start_date, end_date, existing_df = get_incremental_dates()
     
+    # Download raw unaligned data
     new_data = download_all_features(start_date, end_date)
-    
+    new_data.dropna(subset=["Open", "High", "Low", "Close"], how="all", inplace=True)
+    synth_data = append_synthetic_etfs(start_date)
+    new_data = pd.concat([new_data, synth_data], ignore_index=True) if not synth_data.empty else new_data
+
     if not new_data.empty:
-        new_data = append_synthetic_etfs(new_data, start_date)
-        
+        # Combine raw new data with existing history
         if not existing_df.empty:
-            # Combine historical and new data
             final_df = pd.concat([existing_df, new_data], ignore_index=True)
+            final_df["Date"] = clean_date_series(final_df["Date"])
+            final_df.sort_values(["Ticker", "Date"], inplace=True)
             final_df.drop_duplicates(subset=["Ticker", "Date"], keep="last", inplace=True)
         else:
             final_df = new_data
             
-        final_df.sort_values(["Ticker", "Date"], inplace=True)
-        final_df.reset_index(drop=True, inplace=True)
+        # PERFORM MASTER ALIGNMENT ON ENTIRE HISTORY
+        # This scrubs the old file clean of any lingering weekends and safely maps the new ones
+        final_df = align_to_business_days(final_df)
+
+        # Set Dividends and Stock Splits to pd.NA for Crypto and Commodity assets
+        if "Asset_Class" in final_df.columns:
+            non_corporate_mask = final_df["Asset_Class"].isin(["Crypto", "Commodity"])
+            for col in ["Dividends", "Stock Splits"]:
+                if col in final_df.columns:
+                    final_df.loc[non_corporate_mask, col] = pd.NA
 
         final_df.to_parquet(FEATURE_FILE, index=False)
-        logger.info(f"Saved total {len(final_df):,} records to : {FEATURE_FILE}")
+      #  final_df.to_csv(FEATURE_DIR / "yfinance_raw_features.csv", index=False)
+        logger.info(f"Saved {len(final_df):,} cleanly aligned daily records to : {FEATURE_FILE}")
     else:
         final_df = existing_df
         logger.info("No new data downloaded. Existing file is up to date.")
@@ -284,4 +340,3 @@ def fetch_yfinance_features() -> pd.DataFrame:
 
 if __name__ == "__main__":
     df = fetch_yfinance_features()
-    print(df.tail())

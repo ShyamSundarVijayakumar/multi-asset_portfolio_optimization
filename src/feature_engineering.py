@@ -194,13 +194,14 @@ def compute_features(master_market: pd.DataFrame) -> pd.DataFrame:
     df["EMA20_Ratio"] = adj_close / ema20
     df["EMA50_Ratio"] = adj_close / ema50
     
-    # MACD (12, 26, 9)
+    # MACD (12, 26, 9) — expressed as % of EMA26 (this is the standard "Percentage Price Oscillator" formulation of MACD),
+    # so the value means the same thing regardless of the asset's price level
     ema12 = grp["Close"].transform(lambda x: x.ewm(span=12, adjust=False).mean())
     ema26 = grp["Close"].transform(lambda x: x.ewm(span=26, adjust=False).mean())
-    df["MACD"] = ema12 - ema26
+    df["MACD"] = (ema12 - ema26) / ema26
     df["MACD_Signal"] = df.groupby("Ticker")["MACD"].transform(lambda x: x.ewm(span=9, adjust=False).mean())
     df["MACD_Histogram"] = df["MACD"] - df["MACD_Signal"]
-    
+   
     # RSI (14-day)
     price_diff = grp["Close"].diff()
     gain = price_diff.clip(lower=0)

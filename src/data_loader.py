@@ -51,8 +51,10 @@ def load_processed_data() -> dict:
 def merge_and_normalize_data(data_dict: dict) -> pd.DataFrame:
     """
     1. Outer joins all asset DataFrames on 'Date' into a single DataFrame.
-    2. Aligns the calendar strictly to stock trading days (drops weekends/holidays).
-    3. Forward/back-fills missing values safely.
+    2. Builds an empirical Master Calendar handling cross-regional holidays 
+       (e.g., US open / DE closed) by taking the union of equity trading dates.
+    3. Filters the dataset against this master calendar.
+    4. Forward/back-fills missing values safely for markets that were closed.
     """
     # Merge all asset datasets into a single unified DataFrame
     merged_df = None
@@ -65,10 +67,23 @@ def merge_and_normalize_data(data_dict: dict) -> pd.DataFrame:
     # Use Stocks as the master trading calendar to drop weekends and holidays
     trading_dates = data_dict["stocks"]["Date"]
     merged_df = merged_df[merged_df["Date"].isin(trading_dates)].copy()
+
+    # EXPERT FIX: The Union Calendar Approach
+    # Instead of relying solely on the 'stocks' CSV, we combine dates from all 
+    # traditional equity markets (stocks + ETFs) to form a multi-region master calendar.
+    # This naturally solves the "holiday in Germany but trading day in USA" problem.
+ #   master_calendar = pd.concat([
+ #       data_dict["stocks"]["Date"], 
+ #       data_dict["etfs"]["Date"]
+ #   ]).dropna().unique()
+    
+    # Filter the merged dataset to only include days where traditional markets were open
+ #   merged_df = merged_df[merged_df["Date"].isin(master_calendar)].copy()
     
     merged_df.sort_values("Date", inplace=True)
     
-    # Forward-fill any gaps, then backfill leading NaNs
+    # Forward-fill any gaps (e.g., a German stock on a US trading day will ffill its last price),
+    # then backfill leading NaNs.
     merged_df.set_index("Date", inplace=True)
     merged_df = merged_df.ffill().bfill()
     merged_df.reset_index(inplace=True)

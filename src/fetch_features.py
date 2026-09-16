@@ -316,7 +316,7 @@ def fetch_yfinance_features() -> pd.DataFrame:
             final_df.drop_duplicates(subset=["Ticker", "Date"], keep="last", inplace=True)
         else:
             final_df = new_data
-            
+
         # PERFORM MASTER ALIGNMENT ON ENTIRE HISTORY
         # This scrubs the old file clean of any lingering weekends and safely maps the new ones
         final_df = align_to_business_days(final_df)

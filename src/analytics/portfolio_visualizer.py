@@ -20,6 +20,8 @@ def determine_asset_class(row, etf_vars):
     
     if any(x and (name == x or isin == str(x).upper().strip()) for x in etf_vars):
         return "ETF"
+    elif "BOND" in isin or "bond" in name_lower:
+        return "Bonds"
     elif isin.startswith("CRYPTO CURRENCY") or sector == "cryptocurrency":
         return "Cryptocurrency"
     elif sector == "real estate":
@@ -103,8 +105,10 @@ def generate_master_dashboard(file_positions, file_summary, file_look_through, e
     df_perf = df_pos.groupby('Asset Class')[[inv_col, 'Total Value (EUR)']].sum().reset_index()
     
     # Calculate % Change
-    df_perf['% Change'] = ((df_perf['Total Value (EUR)'] - df_perf[inv_col]) / df_perf[inv_col] * 100)
-    df_perf['Hover Info'] = df_perf['% Change'].apply(lambda x: f"Change: {x:+.2f}%")
+    # Invested amount can be 0 (e.g. bonds with Average Buy Price 0) -> avoid inf %
+    invested = df_perf[inv_col].where(df_perf[inv_col] != 0)
+    df_perf['% Change'] = (df_perf['Total Value (EUR)'] - invested) / invested * 100
+    df_perf['Hover Info'] = df_perf['% Change'].apply(lambda x: "Change: N/A" if pd.isna(x) else f"Change: {x:+.2f}%")
     
     # Melt for Grouped Bar
     df_melt = df_perf.melt(id_vars=['Asset Class', 'Hover Info'], value_vars=[inv_col, 'Total Value (EUR)'], 

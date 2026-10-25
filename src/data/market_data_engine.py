@@ -2,10 +2,8 @@ import time
 import pandas as pd
 import yfinance as yf
 from pathlib import Path
-import os
-from dotenv import load_dotenv
-# Load environment variables
-load_dotenv()
+
+from src.config import CONFIG_DIR, MARKET_DATA_DIR
 
 def update_central_fx_file(market_data_dir: Path) -> pd.Series:
     """
@@ -54,9 +52,8 @@ def update_and_fetch_market_data():
     """
     Fetches and updates stock data, strictly enforcing currency conversion via the central FX file.
     """
-    config_dir = Path(os.getenv("config_dir", "."))
-    market_data_dir = Path(os.getenv("market_data_dir", "."))
-    mapper_file = config_dir / "yfinance_ticker_mapper.csv"
+    market_data_dir = MARKET_DATA_DIR
+    mapper_file = CONFIG_DIR / "yfinance_ticker_mapper.csv"
     
     # Phase 1: Get the reliable local FX dictionary/series
     fx_series = update_central_fx_file(market_data_dir)

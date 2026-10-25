@@ -6,13 +6,14 @@ import numpy as np
 import yfinance as yf
 from pathlib import Path
 from datetime import datetime
+from src.config import PROCESSED_DIR, DATA_DIR, CONFIG_DIR
 
 # ==========================================
 # CONFIGURATION
 # ==========================================
-base_dir = Path(os.getenv("data_dir", "."))
-config_dir = Path(os.getenv("config_dir", "."))
-OUTPUT_DIR = os.path.join(base_dir, "processed")
+base_dir = DATA_DIR
+config_dir = CONFIG_DIR
+OUTPUT_DIR = PROCESSED_DIR
 INPUT_FILES = [
     Path(OUTPUT_DIR) / "portfolio_platform1_input.csv",
     Path(OUTPUT_DIR) / "portfolio_platform2_input.csv",

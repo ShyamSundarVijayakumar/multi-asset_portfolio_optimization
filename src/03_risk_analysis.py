@@ -11,18 +11,19 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 sys.path.append(os.path.abspath(".."))
 
 
-from src.portfolio_analytics import run_portfolio_analytics
-from src.real_estate_bonds_data_builder import PortfolioMarketSimulator
-from src.asset_class_builder import consolidate_portfolio_data
-from src.market_data_engine import update_and_fetch_market_data
-from src.index_builder import build_equal_weight_indices
+from src.analytics.portfolio_analytics import run_portfolio_analytics
+from src.data.real_estate_bonds_data_builder import PortfolioMarketSimulator
+from src.data.asset_class_builder import consolidate_portfolio_data
+from src.data.market_data_engine import update_and_fetch_market_data
+from src.data.index_builder import build_equal_weight_indices
+from src.config import PROCESSED_DIR, ASSET_CLASS_DIR, CHARTS_DIR, CONFIG_DIR, MARKET_DATA_DIR
 
-base_dir = Path(os.getenv("data_dir", "."))
-config_dir = Path(os.getenv("config_dir", "."))
-market_data_dir = Path(os.getenv("market_data_dir", "."))
-processed_dir = base_dir / "processed"
-chart_dir = base_dir / "charts"
-asset_class_dir = processed_dir / "Asset class"
+processed_dir = PROCESSED_DIR
+chart_dir = CHARTS_DIR
+asset_class_dir = ASSET_CLASS_DIR
+config_dir = CONFIG_DIR
+market_data_dir = MARKET_DATA_DIR
+
 
 def step1_synthetic_generation():
     input_csv = Path(processed_dir) / "portfolio_platform5_input.csv"

@@ -15,15 +15,9 @@ import pandas as pd
 import yfinance as yf
 
 from src.config import (FILES, FEATURE_DIR, SYNTHETIC_ETFS, YFINANCE_SLEEP, YF_RAW_FILE)
+from src.data.market_data_engine import update_central_fx_file
+from src.config import MARKET_DATA_DIR
 
-# =============================================================================
-# Directories & Logging
-# =============================================================================
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = PROJECT_ROOT / "data"
-FX_DIR = DATA_DIR / "market_data_for_risk_analysis"
-FX_DIR.mkdir(parents=True, exist_ok=True)
-EURUSD_FILE = FX_DIR / "EURUSD.csv"
 FEATURE_FILE = YF_RAW_FILE
 
 logging.basicConfig(
@@ -50,33 +44,8 @@ def clean_date_series(series: pd.Series) -> pd.Series:
 # Incremental & FX Logic
 # =============================================================================
 def update_and_load_eurusd() -> pd.Series:
-    today = pd.Timestamp.today().normalize()
-    
-    if EURUSD_FILE.exists():
-        fx_df = pd.read_csv(EURUSD_FILE, parse_dates=["Date"])
-        last_date = fx_df["Date"].max()
-    else:
-        fx_df = pd.DataFrame(columns=["Date", "EURUSD"])
-        last_date = today - pd.DateOffset(years=5)
-
-    if last_date < today:
-        fetch_start = last_date + pd.Timedelta(days=1)
-        logger.info(f"Updating EURUSD FX rates from {fetch_start.date()} to {today.date()}")
-        
-        new_fx = yf.download("EURUSD=X", start=fetch_start, end=today + pd.Timedelta(days=1), progress=False)
-        if not new_fx.empty:
-            new_fx = new_fx.reset_index()
-            if isinstance(new_fx.columns, pd.MultiIndex):
-                new_fx.columns = [c[0] for c in new_fx.columns]
-            
-            new_fx = new_fx[["Date", "Close"]].rename(columns={"Close": "EURUSD"})
-            fx_df = pd.concat([fx_df, new_fx], ignore_index=True)
-            fx_df.drop_duplicates(subset=["Date"], keep="last", inplace=True)
-            fx_df.to_csv(EURUSD_FILE, index=False)
-
-    fx_df["Date"] = clean_date_series(fx_df["Date"])
-    fx_df.set_index("Date", inplace=True)
-    return fx_df["EURUSD"]
+   """EURUSD rates (index 'Date', name 'EURUSD') from the central FX file, updated to today."""
+   return update_central_fx_file(MARKET_DATA_DIR).rename_axis("Date").rename("EURUSD")
 
 def get_incremental_dates() -> tuple[pd.Timestamp, pd.Timestamp, pd.DataFrame]:
     today = pd.Timestamp.today().normalize()

@@ -5,18 +5,19 @@ import pandas as pd
 import sys
 
 sys.path.append(os.path.abspath(".."))
-from src.ETF_holdings_enriched import process_universal_etf
-from src.look_through_analysis import run_look_through_analysis
-from src.portfolio_visualizer import generate_master_dashboard
+from src.data.ETF_holdings_enriched import process_universal_etf
+from src.analytics.look_through_analysis import run_look_through_analysis
+from src.analytics.portfolio_visualizer import generate_master_dashboard
+from src.config import PROCESSED_DIR, CHARTS_DIR
 
 from dotenv import load_dotenv
 load_dotenv()
 
+
 # --- Configurations ---
-base_dir = Path(os.getenv("data_dir", "."))
-output_dir = os.path.join(base_dir, "processed")
-consolidated_file = Path(output_dir) / "Consolidated_Portfolio_Positions.csv"
-chart_dir = os.path.join(base_dir, "charts")
+output_dir = PROCESSED_DIR
+consolidated_file = PROCESSED_DIR / "Consolidated_Portfolio_Positions.csv"
+chart_dir = CHARTS_DIR
 
 # input paths/ETF's and output path + file name from .env file -- please also check description.txt for more details
 etf1_output_csv = Path(output_dir) / "ETF1_holdings_enriched.csv"
@@ -82,7 +83,7 @@ etf4_config = {
 
 def execute_portfolio_engine():
     """Runs the base portfolio engine script."""
-    import src.portfolio_engine as pe
+    import src.data.portfolio_engine as pe
     pe.run_pipeline() 
 
 def run_update_orchestrator(selected_targets):

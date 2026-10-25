@@ -14,17 +14,19 @@ load_dotenv()
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
-ASSET_CLASS_DIR = DATA_DIR / "processed" / "Asset class"
+PROCESSED_DIR = DATA_DIR / "processed"
+ASSET_CLASS_DIR = PROCESSED_DIR / "Asset class"
+CHARTS_DIR = DATA_DIR / "charts"
 FEATURE_DIR = DATA_DIR / "features"
-FINAL_DIR = DATA_DIR / "final"
-OUTPUT_DIR = PROJECT_ROOT / "outputs"
-MODEL_DIR = PROJECT_ROOT / "models"
+CONFIG_DIR = PROJECT_ROOT / "config"
+RAW_DIR = DATA_DIR / "raw"
+MARKET_DATA_DIR = RAW_DIR / "market_data_for_risk_analysis"
 
 # Create directories if they don't exist
+PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+CHARTS_DIR.mkdir(parents=True, exist_ok=True)
 FEATURE_DIR.mkdir(parents=True, exist_ok=True)
-FINAL_DIR.mkdir(parents=True, exist_ok=True)
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-MODEL_DIR.mkdir(parents=True, exist_ok=True)
+CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 # =============================================================================
 # Processed Files

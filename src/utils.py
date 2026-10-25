@@ -2,12 +2,11 @@ import json
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
+from src.config import PROCESSED_DIR, CONFIG_DIR
 
-# Dynamically locate the project root directory from src/utils.py
-ROOT_DIR = Path(__file__).resolve().parent.parent
-P_PATH = ROOT_DIR / "data/processed/Consolidated_Portfolio_Positions.csv"
-M_PATH = ROOT_DIR / "config/yfinance_ticker_mapper.csv"
-CACHE_LOG_PATH = ROOT_DIR / "data/processed/.engine_cache.json"
+P_PATH = PROCESSED_DIR / "Consolidated_Portfolio_Positions.csv"
+M_PATH = CONFIG_DIR / "yfinance_ticker_mapper.csv"
+CACHE_LOG_PATH = PROCESSED_DIR / ".engine_cache.json"
 
 def read_clean_dataframe(file_path: Path) -> pd.DataFrame:
     """

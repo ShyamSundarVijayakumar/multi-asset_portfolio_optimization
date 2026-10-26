@@ -4,6 +4,8 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 
+from src.config import CONFIG_DIR
+
 def clean_company_name(name):
     """Standardizes company names by stripping legal suffixes."""
     if not isinstance(name, str) or name.lower() == 'nan':
@@ -36,8 +38,8 @@ def run_look_through_analysis(consolidated_file_path, etf_file_mapping, output_d
     print("Loading consolidated portfolio...")
     portfolio_df = pd.read_csv(consolidated_file_path)
     portfolio_df['Total Value (EUR)'] = portfolio_df['Current Quantity'] * portfolio_df['Current Price (EUR)']
-    
-    mapping_path = Path("../config/asset_groups.csv")
+
+    mapping_path = CONFIG_DIR / "asset_groups.csv"
     asset_group_map = load_asset_mapping(mapping_path)
 
     portfolio_df['isin_clean'] = portfolio_df['ISIN'].astype(str).str.strip().str.upper()
